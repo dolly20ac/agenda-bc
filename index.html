@@ -12,8 +12,9 @@
     <meta name="apple-mobile-web-app-title" content="Agenda" />
     <meta name="robots" content="noindex, nofollow" />
     <title>Agenda</title>
-    <link rel="icon" href="icono.jpg" />
-    <link rel="apple-touch-icon" href="icono.jpg" />
+    <link rel="manifest" href="manifest.json" />
+    <link rel="icon" href="icono-192.png" />
+    <link rel="apple-touch-icon" href="icono-192.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -1507,6 +1508,7 @@
         if (E.vista === "confirmadas") return pintarConfirmadas();
         if (E.vista === "nueva") return pintarFormulario();
         if (E.vista === "detalle") return pintarDetalle();
+        if (E.vista === "avisos") return pintarAvisos();
       }
 
       /* =====================================================================
@@ -1544,7 +1546,9 @@
           '</div><div class="marca-sub">' +
           esc(CONFIG.marca.sub) +
           "</div></div></div>" +
-          '<button type="button" class="btn-redondo" id="btn-salir" aria-label="Cerrar sesión"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="M10 17l5-5-5-5"/><path d="M15 12H3"/></svg></button>' +
+          '<div style="display:flex;gap:8px">' +
+          '<button type="button" class="btn-redondo" id="btn-avisos" aria-label="Avisos de citas"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg></button>' +
+          '<button type="button" class="btn-redondo" id="btn-salir" aria-label="Cerrar sesión"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="M10 17l5-5-5-5"/><path d="M15 12H3"/></svg></button></div>' +
           "</header>" +
           '<main class="contenido">' +
           '<div class="fila-fecha"><h1>' +
@@ -1566,6 +1570,7 @@
           '<div class="turnos" id="turnos"><div class="cargando">Cargando citas…</div></div>' +
           "</main>";
 
+        $("#btn-avisos").onclick = () => ir("avisos");
         $("#btn-salir").onclick = async () => {
           if (confirm("¿Cerrar sesión?")) await db.auth.signOut();
         };
@@ -2494,6 +2499,176 @@
       }
 
       /* =====================================================================
+   Vista: Avisos (notificaciones push)
+   ===================================================================== */
+      function urlBase64AUint8(s) {
+        const p = "=".repeat((4 - (s.length % 4)) % 4);
+        const b = atob((s + p).replace(/-/g, "+").replace(/_/g, "/"));
+        return Uint8Array.from(b, (c) => c.charCodeAt(0));
+      }
+      function esIPhone() {
+        return (
+          /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+          (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+        );
+      }
+      function esInstalada() {
+        return (
+          window.matchMedia("(display-mode: standalone)").matches ||
+          window.navigator.standalone === true
+        );
+      }
+      async function registroSW() {
+        if (!("serviceWorker" in navigator)) return null;
+        try {
+          await navigator.serviceWorker.register("sw.js");
+          return await Promise.race([
+            navigator.serviceWorker.ready,
+            new Promise((r) => setTimeout(() => r(null), 6000)),
+          ]);
+        } catch (e) {
+          return null;
+        }
+      }
+
+      async function pintarAvisos() {
+        const v = $("#vista");
+        v.innerHTML =
+          '<header class="barra-titulo"><button type="button" class="btn-redondo" id="btn-volver" aria-label="Volver a la agenda">' +
+          ICONO_ATRAS +
+          "</button><h1>Avisos</h1></header>" +
+          '<main class="contenido">' +
+          '<section class="ficha">' +
+          '<p style="margin:0">Te llega una notificación <b>' +
+          (CONFIG.minutosAviso || 15) +
+          " minutos antes</b> de cada cita <b>confirmada</b>, aunque la agenda esté cerrada.</p>" +
+          '<p class="nota-turno" id="av-estado">Revisando este celular…</p>' +
+          "</section>" +
+          '<section class="columna">' +
+          '<button type="button" class="btn btn-principal btn-grande" id="av-activar" hidden>Activar avisos en este celular</button>' +
+          '<button type="button" class="btn btn-grande" id="av-probar" hidden>Enviar aviso de prueba</button>' +
+          '<button type="button" class="btn btn-peligro btn-grande" id="av-quitar" hidden>Desactivar en este celular</button>' +
+          "</section>" +
+          "</main>";
+        $("#btn-volver").onclick = () => ir("agenda");
+
+        const estado = $("#av-estado");
+        const mostrar = (txt, botones) => {
+          estado.textContent = txt;
+          ["activar", "probar", "quitar"].forEach((b) => {
+            $("#av-" + b).hidden = !(botones || []).includes(b);
+          });
+        };
+
+        if (!CONFIG.VAPID_PUBLIC)
+          return mostrar(
+            "Los avisos todavía no están configurados para esta agenda.",
+          );
+        if (esIPhone() && !esInstalada())
+          return mostrar(
+            'En iPhone, primero instala la agenda: en Safari toca Compartir → "Agregar a inicio", y ábrela desde ese ícono. Luego vuelve aquí.',
+          );
+        if (
+          !("serviceWorker" in navigator) ||
+          !("PushManager" in window) ||
+          !("Notification" in window)
+        )
+          return mostrar(
+            "Este navegador no permite notificaciones. Usa Chrome en Android o la agenda instalada en iPhone.",
+          );
+        if (Notification.permission === "denied")
+          return mostrar(
+            "Las notificaciones están bloqueadas para la agenda. Actívalas en los ajustes del celular (Notificaciones) y vuelve a entrar aquí.",
+          );
+
+        const reg = await registroSW();
+        if (E.vista !== "avisos") return;
+        if (!reg)
+          return mostrar(
+            "No se pudo preparar el celular para recibir avisos. Recarga la página e intenta de nuevo.",
+          );
+
+        const sub = await reg.pushManager.getSubscription();
+        if (sub && Notification.permission === "granted") {
+          // Por si se borró de la base de datos, la vuelve a guardar
+          guardarSuscripcion(sub);
+          mostrar("Avisos activos en este celular.", ["probar", "quitar"]);
+        } else {
+          mostrar("Los avisos están desactivados en este celular.", [
+            "activar",
+          ]);
+        }
+
+        $("#av-activar").onclick = async (e) => {
+          const b = e.currentTarget;
+          b.setAttribute("aria-busy", "true");
+          try {
+            const permiso = await Notification.requestPermission();
+            if (permiso !== "granted") {
+              b.removeAttribute("aria-busy");
+              return pintarAvisos();
+            }
+            let s = await reg.pushManager.getSubscription();
+            if (!s)
+              s = await reg.pushManager.subscribe({
+                userVisibleOnly: true,
+                applicationServerKey: urlBase64AUint8(CONFIG.VAPID_PUBLIC),
+              });
+            if (!(await guardarSuscripcion(s))) throw new Error("No se guardó");
+            aviso("Avisos activados. Envía una prueba para comprobar.");
+          } catch (err) {
+            aviso("No se pudieron activar los avisos. Intenta otra vez.", true);
+          }
+          pintarAvisos();
+        };
+
+        $("#av-probar").onclick = async (e) => {
+          const b = e.currentTarget;
+          b.setAttribute("aria-busy", "true");
+          const { data, error } = await db.functions.invoke("avisos", {
+            body: { prueba: true },
+          });
+          b.removeAttribute("aria-busy");
+          if (error)
+            aviso(
+              'No se pudo enviar la prueba. Revisa que la función "avisos" esté instalada.',
+              true,
+            );
+          else if (!data || !data.enviados)
+            aviso("No hay celulares activados para recibir avisos.", true);
+          else aviso("Prueba enviada. Debe llegarte en unos segundos.");
+        };
+
+        $("#av-quitar").onclick = async () => {
+          const s = await reg.pushManager.getSubscription();
+          if (s) {
+            await db.from("suscripciones").delete().eq("endpoint", s.endpoint);
+            await s.unsubscribe();
+          }
+          aviso("Avisos desactivados en este celular.");
+          pintarAvisos();
+        };
+      }
+
+      async function guardarSuscripcion(s) {
+        const j = s.toJSON();
+        const { data } = await db.auth.getSession();
+        const email = data && data.session ? data.session.user.email : null;
+        if (!email || !j.keys) return false;
+        const { error } = await db.from("suscripciones").upsert(
+          {
+            endpoint: j.endpoint,
+            p256dh: j.keys.p256dh,
+            auth: j.keys.auth,
+            email: email,
+            dispositivo: navigator.userAgent.slice(0, 150),
+          },
+          { onConflict: "endpoint" },
+        );
+        return !error;
+      }
+
+      /* =====================================================================
    Sesión
    ===================================================================== */
       document
@@ -2533,6 +2708,7 @@
         }
         $("#pantalla-login").hidden = true;
         $("#pantalla-app").hidden = false;
+        registroSW();
         ir("agenda");
       }
 
