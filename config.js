@@ -7,7 +7,8 @@ const CONFIG = {
   SUPABASE_URL: "https://xbklboohltwnmotbemoz.supabase.co",
   SUPABASE_KEY: "sb_publishable_vAtAqwm1mwAlFJcSo78ATg_I5gBeJh3",
 
-  VAPID_PUBLIC: "BPtJiyzQu4UsHf_jt7iTKbpL3jNJtRrgOGNrLfIqcizZu9RtW_VJlbwyQCDe0HYeiHpNDwf30Z1-kFx61X5xZ6Y",
+  VAPID_PUBLIC:
+    "BPtJiyzQu4UsHf_jt7iTKbpL3jNJtRrgOGNrLfIqcizZu9RtW_VJlbwyQCDe0HYeiHpNDwf30Z1-kFx61X5xZ6Y",
   minutosAviso: 15,
 
   negocio: "Beatriz C Studio",
@@ -68,7 +69,4 @@ const CONFIG = {
     ["19:30", "21:00"],
     ["21:00", "22:30"],
   ],
-
-  VAPID_PUBLIC: "PEGA_AQUI_SU_VAPID_PUBLIC",
-  minutosAviso: 15,
 };
