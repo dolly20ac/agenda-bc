@@ -2553,6 +2553,11 @@
         $("#btn-volver").onclick = () => ir("agenda");
 
         const estado = $("#av-estado");
+        const mostrarError = (txt) => {
+          estado.textContent = txt;
+          estado.style.background = "var(--alerta-fondo)";
+          estado.style.color = "var(--alerta)";
+        };
         const mostrar = (txt, botones) => {
           estado.textContent = txt;
           ["activar", "probar", "quitar"].forEach((b) => {
@@ -2602,23 +2607,63 @@
         $("#av-activar").onclick = async (e) => {
           const b = e.currentTarget;
           b.setAttribute("aria-busy", "true");
+          const permiso = await Notification.requestPermission();
+          if (permiso !== "granted") {
+            b.removeAttribute("aria-busy");
+            return pintarAvisos();
+          }
+
+          // 1) Revisa que la clave pública del config.js tenga el formato correcto
+          let clave;
           try {
-            const permiso = await Notification.requestPermission();
-            if (permiso !== "granted") {
-              b.removeAttribute("aria-busy");
-              return pintarAvisos();
-            }
-            let s = await reg.pushManager.getSubscription();
+            clave = urlBase64AUint8(String(CONFIG.VAPID_PUBLIC).trim());
+          } catch (_) {
+            clave = null;
+          }
+          if (!clave || clave.length !== 65 || clave[0] !== 4) {
+            b.removeAttribute("aria-busy");
+            return mostrarError(
+              "La clave VAPID_PUBLIC del config.js no es válida. Debe ser la clave pública (empieza con B y tiene unos 87 caracteres), sin espacios.",
+            );
+          }
+
+          // 2) Registra el celular en el servicio de notificaciones
+          let s;
+          try {
+            s = await reg.pushManager.getSubscription();
+            if (s && !mismaClave(s, clave)) {
+              await s.unsubscribe();
+              s = null;
+            } // registro viejo con otra clave
             if (!s)
               s = await reg.pushManager.subscribe({
                 userVisibleOnly: true,
-                applicationServerKey: urlBase64AUint8(CONFIG.VAPID_PUBLIC),
+                applicationServerKey: clave,
               });
-            if (!(await guardarSuscripcion(s))) throw new Error("No se guardó");
-            aviso("Avisos activados. Envía una prueba para comprobar.");
           } catch (err) {
-            aviso("No se pudieron activar los avisos. Intenta otra vez.", true);
+            b.removeAttribute("aria-busy");
+            return mostrarError(
+              "El celular no pudo registrarse para notificaciones (" +
+                (err.name || "Error") +
+                ": " +
+                (err.message || err) +
+                "). " +
+                "Revisa que estés usando Chrome, que Chrome tenga permiso de notificaciones en los ajustes del celular y que tenga conexión a internet.",
+            );
           }
+
+          // 3) Guarda el registro en Supabase
+          const r = await guardarSuscripcion(s);
+          b.removeAttribute("aria-busy");
+          if (!r.ok) {
+            return mostrarError(
+              "El celular se registró, pero no se pudo guardar en Supabase (" +
+                r.error +
+                "). " +
+                "Revisa que hayas ejecutado el script 1-avisos.sql en este proyecto.",
+            );
+          }
+          aviso("Avisos activados. Envía una prueba para comprobar.");
           pintarAvisos();
         };
 
@@ -2650,11 +2695,19 @@
         };
       }
 
+      function mismaClave(sub, clave) {
+        const k = sub.options && sub.options.applicationServerKey;
+        if (!k) return true;
+        const a = new Uint8Array(k);
+        return a.length === clave.length && a.every((x, i) => x === clave[i]);
+      }
+
       async function guardarSuscripcion(s) {
         const j = s.toJSON();
         const { data } = await db.auth.getSession();
         const email = data && data.session ? data.session.user.email : null;
-        if (!email || !j.keys) return false;
+        if (!email) return { ok: false, error: "no hay sesión iniciada" };
+        if (!j.keys) return { ok: false, error: "registro incompleto" };
         const { error } = await db.from("suscripciones").upsert(
           {
             endpoint: j.endpoint,
@@ -2665,7 +2718,12 @@
           },
           { onConflict: "endpoint" },
         );
-        return !error;
+        return error
+          ? {
+              ok: false,
+              error: (error.code ? error.code + " " : "") + error.message,
+            }
+          : { ok: true };
       }
 
       /* =====================================================================
