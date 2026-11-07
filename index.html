@@ -335,6 +335,18 @@
         font-size: 13px;
         font-weight: 600;
       }
+      .turno-caja.pasado {
+        background: transparent;
+        box-shadow: none;
+        border: 1.5px dashed var(--borde);
+        justify-content: center;
+        color: var(--suave);
+        font-size: 13px;
+        font-weight: 500;
+      }
+      .turno.pasado .turno-hora {
+        opacity: 0.6;
+      }
       .turno-info {
         display: flex;
         flex-direction: column;
@@ -1138,6 +1150,16 @@
         const [h, m] = hhmm(t).split(":").map(Number);
         return h * 60 + m;
       }
+      // Hora local del celular. Un turno "ya pasó" si su hora de inicio es ahora o antes.
+      function minutosAhora() {
+        const n = new Date();
+        return n.getHours() * 60 + n.getMinutes();
+      }
+      function yaPaso(fecha, horaInicio) {
+        if (fecha < hoy()) return true;
+        if (fecha > hoy()) return false;
+        return minutos(horaInicio) <= minutosAhora();
+      }
       function duracionTexto(ini, fin) {
         const m = minutos(fin) - minutos(ini),
           h = Math.floor(m / 60),
@@ -1456,7 +1478,7 @@
               cliente: "",
               telefono: "",
               unidades: [],
-              fecha: E.fecha,
+              fecha: E.fecha < hoy() ? hoy() : E.fecha,
               hora_inicio: "",
               estado: "pendiente",
               nota: "",
@@ -1635,6 +1657,13 @@
               hora(f.fin) +
               "</span></div>";
             if (!f.cita) {
+              if (yaPaso(E.fecha, f.ini)) {
+                return (
+                  '<div class="turno pasado">' +
+                  horaHtml +
+                  '<div class="turno-caja pasado">Hora pasada</div></div>'
+                );
+              }
               return (
                 '<button type="button" class="turno" data-libre="' +
                 f.ini +
@@ -1946,7 +1975,9 @@
           ' por cita)</span><div class="servicios">' +
           htmlServicios +
           "</div></div>" +
-          '<div class="campo"><label for="f-fecha">Fecha</label><input id="f-fecha" type="date" value="' +
+          '<div class="campo"><label for="f-fecha">Fecha</label><input id="f-fecha" type="date" min="' +
+          hoy() +
+          '" value="' +
           f.fecha +
           '"></div>' +
           '<div class="campo"><span class="rotulo" id="f-horas-rotulo">Hora de inicio</span><div class="opciones tres" id="f-horas"><div class="cargando" style="grid-column:1/-1;padding:10px">Revisando disponibilidad…</div></div>' +
@@ -2019,6 +2050,10 @@
               }),
           );
         $("#f-fecha").onchange = (e) => {
+          if (e.target.value && e.target.value < hoy()) {
+            aviso("No se puede agendar en fechas pasadas.", true);
+            e.target.value = f.fecha >= hoy() ? f.fecha : hoy();
+          }
           f.fecha = e.target.value;
           f.hora_inicio = "";
           cargarOcupadas();
@@ -2073,6 +2108,13 @@
           return;
         }
         if (f.ocupadasFecha !== f.fecha) return;
+        if (f.fecha < hoy()) {
+          caja.innerHTML =
+            '<div class="texto-suave" style="grid-column:1/-1">No se puede agendar en fechas pasadas. Elige hoy o un día futuro.</div>';
+          f.hora_inicio = "";
+          resumen.hidden = true;
+          return;
+        }
 
         const n = Math.max(1, Math.min(f.unidades.length, maxTurnos())),
           oc = f.ocupadas;
@@ -2082,14 +2124,25 @@
             : "Hora de inicio";
 
         const iSel = CONFIG.horarios.findIndex((h) => h[0] === f.hora_inicio);
-        if (iSel < 0 || !cabeDesde(iSel, n, oc)) f.hora_inicio = "";
+        if (
+          iSel < 0 ||
+          !cabeDesde(iSel, n, oc) ||
+          yaPaso(f.fecha, f.hora_inicio)
+        )
+          f.hora_inicio = "";
 
         caja.innerHTML = CONFIG.horarios
           .map((h, i) => {
             const ocupado = !!oc[h[0]],
-              cabe = cabeDesde(i, n, oc);
+              cabe = cabeDesde(i, n, oc),
+              pasado = yaPaso(f.fecha, h[0]);
             let attrs = "";
-            if (ocupado)
+            if (pasado)
+              attrs =
+                ' disabled class="opcion corto" aria-label="' +
+                hora(h[0]) +
+                ': ya pasó"';
+            else if (ocupado)
               attrs = ' disabled aria-label="' + hora(h[0]) + ' ocupado"';
             else if (!cabe)
               attrs =
@@ -2112,6 +2165,13 @@
           })
           .join("");
 
+        if (
+          f.fecha === hoy() &&
+          CONFIG.horarios.every((h) => yaPaso(f.fecha, h[0]))
+        ) {
+          caja.innerHTML =
+            '<div class="texto-suave" style="grid-column:1/-1">Ya pasaron todos los turnos de hoy. Elige otro día.</div>';
+        }
         caja.querySelectorAll("[data-hora]").forEach(
           (b) =>
             (b.onclick = () => {
@@ -2183,6 +2243,11 @@
         if (!f.fecha) return aviso("Elige la fecha.", true);
         if (!f.hora_inicio)
           return aviso("Elige una hora de inicio libre.", true);
+        if (yaPaso(f.fecha, f.hora_inicio)) {
+          aviso("Esa hora ya pasó. Elige otra.", true);
+          f.hora_inicio = "";
+          return pintarHoras();
+        }
 
         const turnos = turnosElegidos();
         const grupo = f.grupo || nuevoId();
